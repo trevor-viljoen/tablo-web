@@ -1,0 +1,23 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { @apply h-full bg-surface text-white antialiased; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-white/10 rounded-full; }
+}
+
+@layer utilities {
+  .glass {
+    background: rgba(255,255,255,0.04);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  .channel-glow {
+    box-shadow: 0 0 0 1px rgba(91,138,245,0.5), 0 0 32px rgba(91,138,245,0.2);
+  }
+}

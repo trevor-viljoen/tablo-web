@@ -1,0 +1,28 @@
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    volumes:
+      - data:/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    expose:
+      - "8000"
+    networks:
+      - internal
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "7070:80"
+    depends_on:
+      - backend
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  data:
