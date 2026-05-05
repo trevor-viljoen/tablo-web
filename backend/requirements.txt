@@ -1,4 +1,4 @@
 fastapi>=0.111
 uvicorn[standard]>=0.29
 httpx>=0.27
-tablo-api @ git+https://github.com/trevor-viljoen/tablo-api.git
+tablo-api>=0.1.1
