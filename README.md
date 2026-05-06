@@ -1,11 +1,11 @@
 # tablo-web
 
-[![CI](https://github.com/trevor-viljoen/tablo-web/actions/workflows/ci.yml/badge.svg)](https://github.com/trevor-viljoen/tablo-web/actions/workflows/ci.yml)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/trevor-viljoen/tablo-web)](https://github.com/trevor-viljoen/tablo-web/releases)
-[![GitHub top language](https://img.shields.io/github/languages/top/trevor-viljoen/tablo-web)](https://github.com/trevor-viljoen/tablo-web)
-[![GitHub language count](https://img.shields.io/github/languages/count/trevor-viljoen/tablo-web)](https://github.com/trevor-viljoen/tablo-web)
-[![GitHub repo size](https://img.shields.io/github/repo-size/trevor-viljoen/tablo-web)](https://github.com/trevor-viljoen/tablo-web)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://img.shields.io/github/actions/workflow/status/trevor-viljoen/tablo-web/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/trevor-viljoen/tablo-web/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/trevor-viljoen/tablo-web?style=flat-square)](https://github.com/trevor-viljoen/tablo-web/releases)
+[![Top Language](https://img.shields.io/github/languages/top/trevor-viljoen/tablo-web?style=flat-square)](https://github.com/trevor-viljoen/tablo-web)
+[![Language Count](https://img.shields.io/github/languages/count/trevor-viljoen/tablo-web?style=flat-square)](https://github.com/trevor-viljoen/tablo-web)
+[![Repo Size](https://img.shields.io/github/repo-size/trevor-viljoen/tablo-web?style=flat-square)](https://github.com/trevor-viljoen/tablo-web)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
 > **Warning**  
 > This is an unofficial web interface for Tablo devices. It is not affiliated with Nuvyyo Inc. or Tablo. Use at your own risk.
