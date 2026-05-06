@@ -10,35 +10,37 @@ interface Props {
 
 export function VideoPlayer({ channel, onClose }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const { load, destroy } = usePlayer(videoRef);
+  const { load, destroy, error: playerError } = usePlayer(videoRef);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [apiError, setApiError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(true);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(null);
+
+  const combinedError = apiError || playerError;
 
   // Start stream on mount
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    setError(null);
+    setApiError(null);
 
     api.startStream(channel.identifier)
-      .then(({ session_id, proxy_url }) => {
+      .then(({ session_id, stream_url }) => {
         if (cancelled) return;
         setSessionId(session_id);
-        load(proxy_url);
+        load(stream_url);
         setLoading(false);
       })
       .catch((e) => {
-        if (!cancelled) { setError(e.message); setLoading(false); }
+        if (!cancelled) { setApiError(e.message); setLoading(false); }
       });
 
     return () => {
       cancelled = true;
       destroy();
     };
-  }, [channel.identifier]);
+  }, [channel.identifier, load, destroy]);
 
   // Stop stream on unmount
   useEffect(() => {
@@ -57,7 +59,7 @@ export function VideoPlayer({ channel, onClose }: Props) {
   useEffect(() => {
     resetHideTimer();
     return () => { if (hideTimer.current) clearTimeout(hideTimer.current); };
-  }, []);
+  }, [resetHideTimer]);
 
   // Keyboard
   useEffect(() => {
@@ -82,10 +84,11 @@ export function VideoPlayer({ channel, onClose }: Props) {
         className="w-full h-full object-contain"
         playsInline
         autoPlay
+        muted // Critical for autoplay in most browsers
       />
 
       {/* Loading / error overlay */}
-      {(loading || error) && (
+      {(loading || combinedError) && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/70">
           {loading && (
             <>
@@ -93,9 +96,9 @@ export function VideoPlayer({ channel, onClose }: Props) {
               <p className="text-white/60 text-sm">Starting stream…</p>
             </>
           )}
-          {error && (
+          {combinedError && (
             <>
-              <p className="text-red-400 text-sm max-w-xs text-center">{error}</p>
+              <p className="text-red-400 text-sm max-w-xs text-center">{combinedError}</p>
               <button onClick={onClose} className="px-4 py-2 rounded-lg glass text-sm hover:bg-white/10 transition">
                 Close
               </button>

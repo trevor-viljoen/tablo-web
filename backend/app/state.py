@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Lock
 
@@ -31,7 +32,7 @@ class AppState:
         self.active_device: TabloDevice | None = None
         self._channels: list[TabloChannel] | None = None
         self.streams: dict[str, StreamSession] = {}  # session_id → session
-        self._http = httpx.AsyncClient(timeout=15)
+        self._http = httpx.AsyncClient(timeout=30)
 
     # ------------------------------------------------------------------
     # Persistence
@@ -88,13 +89,26 @@ class AppState:
     # Channels
     # ------------------------------------------------------------------
 
-    async def channels(self, refresh: bool = False) -> list[TabloChannel]:
+    async def channels(self, refresh: bool = False, include_ott: bool = True) -> list[TabloChannel]:
+        """Get channels from Tablo (OTA + OTT)."""
         if self.active_device is None:
             raise RuntimeError("No active device")
+
         if self._channels is None or refresh:
             client = TabloClient(self.active_device)
-            self._channels = await _run_sync(client.channels)
+
+            # Ultra-safe wrapper
+            def fetch_channels():
+                try:
+                    return client.channels(include_ott=include_ott)
+                except Exception as e:
+                    print(f"Error calling client.channels: {e}")
+                    raise
+
+            self._channels = await _run_sync(fetch_channels)
+
         return self._channels
+
 
     # ------------------------------------------------------------------
     # Streaming
@@ -113,6 +127,268 @@ class AppState:
 
     def get_session(self, session_id: str) -> StreamSession | None:
         return self.streams.get(session_id)
+
+    async def request_device(self, method: str, path: str, body: str = "") -> dict:
+        """Make an authenticated request to the active local Tablo device."""
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+        
+        from tablo_api import TabloAuth
+        auth_header, date_header = TabloAuth.make_device_auth(method, path, body)
+        
+        url = self.active_device.local_url.rstrip("/") + path
+        resp = await self._http.request(
+            method,
+            url,
+            content=body.encode() if body else None,
+            headers={
+                "Authorization": auth_header,
+                "Date": date_header,
+                "User-Agent": "Tablo-FAST/1.7.0 (Mobile; iPhone; iOS 18.4)",
+            }
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_guide_data(self) -> list[dict]:
+        """Aggregate channels with logos and current airing info."""
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+
+        import asyncio
+        from datetime import datetime, timezone
+
+        # 1. Get base channels (cloud)
+        channels = await self.channels()
+        
+        # 2. Get local channel detail paths
+        try:
+            local_paths = await self.request_device("GET", "/guide/channels")
+        except Exception:
+            local_paths = []
+
+        # 3. Fetch channel details in parallel (limit to first 50 for safety)
+        async def fetch_detail(path):
+            try:
+                return await self.request_device("GET", path)
+            except Exception:
+                return None
+
+        details = await asyncio.gather(*[fetch_detail(p) for p in local_paths[:60]])
+        
+        # Map channel_identifier -> logo_url
+        logo_map = {}
+        for d in details:
+            if d and "channel" in d:
+                c_info = d["channel"]
+                ident = c_info.get("channel_identifier")
+                logos = c_info.get("logos", [])
+                # Prefer originalLarge, then lightLarge
+                logo = next((l["url"] for l in logos if l["kind"] == "originalLarge"), None)
+                if not logo:
+                    logo = next((l["url"] for l in logos if l["kind"] == "lightLarge"), None)
+                if ident and logo:
+                    logo_map[ident] = logo
+
+        # 4. Get current airings
+        try:
+            airing_paths = await self.request_device("GET", "/guide/airings")
+        except Exception:
+            airing_paths = []
+
+        # We'll fetch the first 100 airings to find current ones
+        # This is a bit brute-force, but Tablo API is undocumented and doesn't have a "current" endpoint easily known.
+        async def fetch_airing(path):
+            try:
+                return await self.request_device("GET", path)
+            except Exception:
+                return None
+
+        # Optimization: only fetch first 200 airing paths to avoid massive latency
+        airing_details = await asyncio.gather(*[fetch_airing(p) for p in airing_paths[:150]])
+        
+        # Map channel_path -> current_airing
+        channel_airing_map = {}
+        now = datetime.now(timezone.utc)
+        
+        for a in airing_details:
+            if not a or "airing_details" not in a:
+                continue
+            
+            ad = a["airing_details"]
+            try:
+                start_str = ad.get("datetime")
+                if not start_str: continue
+                
+                # Parse ISO date (e.g. 2026-05-06T11:00Z)
+                start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                duration = ad.get("duration", 0)
+                end = start + timedelta(seconds=duration)
+                
+                if start <= now < end:
+                    c_path = ad.get("channel_path")
+                    if c_path:
+                        # Store show info
+                        channel_airing_map[c_path] = {
+                            "title": ad.get("show_title"),
+                            "description": a.get("episode", {}).get("description") or a.get("series", {}).get("description"),
+                            "start": start_str,
+                            "duration": duration
+                        }
+            except Exception:
+                continue
+
+        # 5. Build final guide
+        # We need to link channel identifiers back to paths.
+        # Let's rebuild the map more carefully.
+        path_to_ident = {}
+        for d in details:
+            if d and "channel" in d:
+                path_to_ident[d["path"]] = d["channel"]["channel_identifier"]
+
+        guide = []
+        for c in channels:
+            # Find the path for this channel to get its airing
+            c_path = next((path for path, ident in path_to_ident.items() if ident == c.identifier), None)
+            
+            guide.append({
+                "identifier": c.identifier,
+                "call_sign": c.call_sign,
+                "major": c.major,
+                "minor": c.minor,
+                "network": c.network,
+                "kind": c.kind,
+                "display_name": c.display_name,
+                "logo_url": logo_map.get(c.identifier),
+                "current_program": channel_airing_map.get(c_path) if c_path else None
+            })
+            
+        return guide
+
+    async def get_recordings(self) -> list[dict]:
+        """Fetch all recordings from the device."""
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+
+        import asyncio
+        try:
+            paths = await self.request_device("GET", "/recordings/airings")
+        except Exception:
+            return []
+
+        async def fetch_recording(path):
+            try:
+                data = await self.request_device("GET", path)
+                # Enriched with some helpful fields
+                ad = data.get("airing_details", {})
+                return {
+                    "identifier": data.get("object_id"),
+                    "path": path,
+                    "title": ad.get("show_title"),
+                    "description": data.get("episode", {}).get("description") or data.get("series", {}).get("description"),
+                    "start": ad.get("datetime"),
+                    "duration": ad.get("duration"),
+                    "thumbnail": None # Could resolve series image later
+                }
+            except Exception:
+                return None
+
+        # Fetch first 50 recordings for now to keep it snappy
+        recordings = await asyncio.gather(*[fetch_recording(p) for p in paths[:50]])
+        return [r for r in recordings if r]
+
+    async def get_grid_guide(self) -> list[dict]:
+        """Fetch a traditional grid guide (channels + multiple upcoming airings)."""
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+
+        import asyncio
+        from datetime import datetime, timezone, timedelta
+
+        # 1. Get base channels
+        channels = await self.channels()
+        
+        # 2. Get local channel detail paths to map identifier -> path
+        try:
+            local_paths = await self.request_device("GET", "/guide/channels")
+        except Exception:
+            local_paths = []
+
+        async def fetch_detail(path):
+            try:
+                return await self.request_device("GET", path)
+            except Exception:
+                return None
+
+        details = await asyncio.gather(*[fetch_detail(p) for p in local_paths[:60]])
+        path_to_ident = {}
+        logo_map = {}
+        for d in details:
+            if d and "channel" in d:
+                c_info = d["channel"]
+                ident = c_info.get("channel_identifier")
+                path_to_ident[d["path"]] = ident
+                logos = c_info.get("logos", [])
+                logo = next((l["url"] for l in logos if l["kind"] == "originalLarge"), None)
+                if ident and logo:
+                    logo_map[ident] = logo
+
+        # 3. Get airings
+        try:
+            airing_paths = await self.request_device("GET", "/guide/airings")
+        except Exception:
+            airing_paths = []
+
+        # We'll fetch more airings to build a grid (next 6 hours roughly)
+        async def fetch_airing(path):
+            try:
+                return await self.request_device("GET", path)
+            except Exception:
+                return None
+
+        # Fetch first 300 airing details
+        airing_details = await asyncio.gather(*[fetch_airing(p) for p in airing_paths[:300]])
+        
+        # Group airings by channel_path
+        channel_to_airings = {}
+        for a in airing_details:
+            if not a or "airing_details" not in a:
+                continue
+            ad = a["airing_details"]
+            c_path = ad.get("channel_path")
+            if not c_path: continue
+            
+            if c_path not in channel_to_airings:
+                channel_to_airings[c_path] = []
+                
+            channel_to_airings[c_path].append({
+                "title": ad.get("show_title"),
+                "description": a.get("episode", {}).get("description") or a.get("series", {}).get("description"),
+                "start": ad.get("datetime"),
+                "duration": ad.get("duration")
+            })
+
+        # 4. Assemble final grid
+        grid = []
+        for c in channels:
+            c_path = next((path for path, ident in path_to_ident.items() if ident == c.identifier), None)
+            
+            # Sort airings by time
+            airings = channel_to_airings.get(c_path, []) if c_path else []
+            airings.sort(key=lambda x: x["start"])
+            
+            grid.append({
+                "identifier": c.identifier,
+                "call_sign": c.call_sign,
+                "major": c.major,
+                "minor": c.minor,
+                "network": c.network,
+                "display_name": c.display_name,
+                "logo_url": logo_map.get(c.identifier),
+                "airings": airings
+            })
+            
+        return grid
 
     def stop_session(self, session_id: str) -> None:
         with _lock:
