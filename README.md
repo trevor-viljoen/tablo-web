@@ -1,5 +1,11 @@
 # tablo-web
 
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/trevor-viljoen/tablo-web?style=flat-square)
+![GitHub top language](https://img.shields.io/github/languages/top/trevor-viljoen/tablo-web?style=flat-square)
+![GitHub language count](https://img.shields.io/github/languages/count/trevor-viljoen/tablo-web?style=flat-square)
+![GitHub repo size](https://img.shields.io/github/repo-size/trevor-viljoen/tablo-web?style=flat-square)
+![GitHub](https://img.shields.io/github/license/trevor-viljoen/tablo-web?style=flat-square)
+
 > **Warning**  
 > This is an unofficial web interface for Tablo devices. It is not affiliated with Nuvyyo Inc. or Tablo. Use at your own risk.
 
