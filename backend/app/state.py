@@ -166,14 +166,16 @@ class AppState:
         except Exception:
             local_paths = []
 
-        # 3. Fetch channel details in parallel (limit to first 50 for safety)
+        # 3. Fetch channel details in parallel (limit to first 300 for safety)
+        sem = asyncio.Semaphore(30)
         async def fetch_detail(path):
-            try:
-                return await self.request_device("GET", path)
-            except Exception:
-                return None
+            async with sem:
+                try:
+                    return await self.request_device("GET", path)
+                except Exception:
+                    return None
 
-        details = await asyncio.gather(*[fetch_detail(p) for p in local_paths[:60]])
+        details = await asyncio.gather(*[fetch_detail(p) for p in local_paths[:300]])
         
         # Map channel_identifier -> logo_url
         logo_map = {}
@@ -195,16 +197,18 @@ class AppState:
         except Exception:
             airing_paths = []
 
-        # We'll fetch the first 100 airings to find current ones
-        # This is a bit brute-force, but Tablo API is undocumented and doesn't have a "current" endpoint easily known.
+        # We'll fetch a larger number of airings to cover OTA and OTT channels.
+        # Tablo Gen 4 can have 100+ FAST channels.
+        sem = asyncio.Semaphore(30)
         async def fetch_airing(path):
-            try:
-                return await self.request_device("GET", path)
-            except Exception:
-                return None
+            async with sem:
+                try:
+                    return await self.request_device("GET", path)
+                except Exception:
+                    return None
 
-        # Optimization: only fetch first 200 airing paths to avoid massive latency
-        airing_details = await asyncio.gather(*[fetch_airing(p) for p in airing_paths[:150]])
+        # Increase limit to 800 to cover more channels (especially OTT)
+        airing_details = await asyncio.gather(*[fetch_airing(p) for p in airing_paths[:800]])
         
         # Map channel_path -> current_airing
         channel_airing_map = {}
@@ -313,13 +317,15 @@ class AppState:
         except Exception:
             local_paths = []
 
+        sem = asyncio.Semaphore(30)
         async def fetch_detail(path):
-            try:
-                return await self.request_device("GET", path)
-            except Exception:
-                return None
+            async with sem:
+                try:
+                    return await self.request_device("GET", path)
+                except Exception:
+                    return None
 
-        details = await asyncio.gather(*[fetch_detail(p) for p in local_paths[:60]])
+        details = await asyncio.gather(*[fetch_detail(p) for p in local_paths[:300]])
         path_to_ident = {}
         logo_map = {}
         for d in details:
@@ -340,13 +346,14 @@ class AppState:
 
         # We'll fetch more airings to build a grid (next 6 hours roughly)
         async def fetch_airing(path):
-            try:
-                return await self.request_device("GET", path)
-            except Exception:
-                return None
+            async with sem:
+                try:
+                    return await self.request_device("GET", path)
+                except Exception:
+                    return None
 
-        # Fetch first 300 airing details
-        airing_details = await asyncio.gather(*[fetch_airing(p) for p in airing_paths[:300]])
+        # Fetch first 1500 airing details to cover more channels/time
+        airing_details = await asyncio.gather(*[fetch_airing(p) for p in airing_paths[:1500]])
         
         # Group airings by channel_path
         channel_to_airings = {}
