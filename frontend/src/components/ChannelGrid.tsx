@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, type GuideChannel } from "../api/tablo";
+import { api, type GuideChannel, type GridChannel } from "../api/tablo";
 import { ChannelCard } from "./ChannelCard";
 import { VideoPlayer } from "./VideoPlayer";
 import { LibraryView } from "./LibraryView";
@@ -16,6 +16,12 @@ export function ChannelGrid({ onLogout }: Props) {
   const [playing, setPlaying] = useState<GuideChannel | null>(null);
   const [filter, setFilter] = useState("");
   const [activeTab, setTab] = useState<Tab>("live");
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const { data: channels = [], isLoading } = useQuery({
     queryKey: ["guide"],
@@ -33,8 +39,9 @@ export function ChannelGrid({ onLogout }: Props) {
     ch.display_name.includes(filter)
   );
 
-  const handlePlay = (ch: any) => {
-    setPlaying({
+  const handlePlay = (ch: GuideChannel | GridChannel) => {
+    const isGrid = 'airings' in ch;
+    const guideCh: GuideChannel = {
       identifier: ch.identifier,
       call_sign: ch.call_sign,
       major: ch.major,
@@ -43,14 +50,16 @@ export function ChannelGrid({ onLogout }: Props) {
       kind: ch.kind,
       display_name: ch.display_name,
       logo_url: ch.logo_url,
-      current_program: ch.airings ? ch.airings[0] : ch.current_program
-    });
+      current_program: isGrid ? (ch as GridChannel).airings[0] : (ch as GuideChannel).current_program
+    };
+    setPlaying(guideCh);
   };
 
   return (
     <>
       {playing && (
         <VideoPlayer 
+          key={playing.identifier}
           channel={{
             identifier: playing.identifier,
             call_sign: playing.call_sign,
@@ -159,7 +168,7 @@ export function ChannelGrid({ onLogout }: Props) {
               ) : (
                 <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}>
                   {filtered.map(ch => (
-                    <ChannelCard key={ch.identifier} channel={ch} onClick={() => setPlaying(ch)} />
+                    <ChannelCard key={ch.identifier} channel={ch} now={now} onClick={() => setPlaying(ch)} />
                   ))}
                 </div>
               )}

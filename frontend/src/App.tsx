@@ -9,16 +9,11 @@ const qc = new QueryClient();
 function Inner() {
   const [authed, setAuthed] = useState<boolean | null>(null);
 
-  const check = async () => {
-    try {
-      const s = await api.status();
-      setAuthed(s.authenticated);
-    } catch {
-      setAuthed(false);
-    }
-  };
-
-  useEffect(() => { check(); }, []);
+  useEffect(() => {
+    api.status()
+      .then(s => setAuthed(s.authenticated))
+      .catch(() => setAuthed(false));
+  }, []);
 
   const logout = async () => {
     await api.logout().catch(() => {});

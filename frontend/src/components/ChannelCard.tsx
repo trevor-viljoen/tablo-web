@@ -1,20 +1,21 @@
+import { useMemo } from "react";
 import type { GuideChannel } from "../api/tablo";
 
 interface Props {
   channel: GuideChannel;
+  now: number;
   onClick: () => void;
 }
 
-export function ChannelCard({ channel, onClick }: Props) {
+export function ChannelCard({ channel, now, onClick }: Props) {
   const program = channel.current_program;
   
   // Calculate progress
-  let progress = 0;
-  if (program) {
+  const progress = useMemo(() => {
+    if (!program) return 0;
     const start = new Date(program.start).getTime();
-    const now = Date.now();
-    progress = Math.max(0, Math.min(100, ((now - start) / (program.duration * 1000)) * 100));
-  }
+    return Math.max(0, Math.min(100, ((now - start) / (program.duration * 1000)) * 100));
+  }, [program, now]);
 
   return (
     <button

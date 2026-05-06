@@ -156,7 +156,6 @@ class AppState:
             raise RuntimeError("No active device")
 
         import asyncio
-        from datetime import datetime, timezone
 
         # 1. Get base channels (cloud)
         channels = await self.channels()
@@ -184,9 +183,9 @@ class AppState:
                 ident = c_info.get("channel_identifier")
                 logos = c_info.get("logos", [])
                 # Prefer originalLarge, then lightLarge
-                logo = next((l["url"] for l in logos if l["kind"] == "originalLarge"), None)
+                logo = next((logo_entry["url"] for logo_entry in logos if logo_entry["kind"] == "originalLarge"), None)
                 if not logo:
-                    logo = next((l["url"] for l in logos if l["kind"] == "lightLarge"), None)
+                    logo = next((logo_entry["url"] for logo_entry in logos if logo_entry["kind"] == "lightLarge"), None)
                 if ident and logo:
                     logo_map[ident] = logo
 
@@ -218,7 +217,8 @@ class AppState:
             ad = a["airing_details"]
             try:
                 start_str = ad.get("datetime")
-                if not start_str: continue
+                if not start_str:
+                    continue
                 
                 # Parse ISO date (e.g. 2026-05-06T11:00Z)
                 start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
@@ -303,7 +303,6 @@ class AppState:
             raise RuntimeError("No active device")
 
         import asyncio
-        from datetime import datetime, timezone, timedelta
 
         # 1. Get base channels
         channels = await self.channels()
@@ -329,7 +328,7 @@ class AppState:
                 ident = c_info.get("channel_identifier")
                 path_to_ident[d["path"]] = ident
                 logos = c_info.get("logos", [])
-                logo = next((l["url"] for l in logos if l["kind"] == "originalLarge"), None)
+                logo = next((logo_entry["url"] for logo_entry in logos if logo_entry["kind"] == "originalLarge"), None)
                 if ident and logo:
                     logo_map[ident] = logo
 
@@ -356,7 +355,8 @@ class AppState:
                 continue
             ad = a["airing_details"]
             c_path = ad.get("channel_path")
-            if not c_path: continue
+            if not c_path:
+                continue
             
             if c_path not in channel_to_airings:
                 channel_to_airings[c_path] = []

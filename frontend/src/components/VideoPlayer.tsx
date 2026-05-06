@@ -22,8 +22,6 @@ export function VideoPlayer({ channel, onClose }: Props) {
   // Start stream on mount
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setApiError(null);
 
     api.startStream(channel.identifier)
       .then(({ session_id, stream_url }) => {
@@ -33,7 +31,10 @@ export function VideoPlayer({ channel, onClose }: Props) {
         setLoading(false);
       })
       .catch((e) => {
-        if (!cancelled) { setApiError(e.message); setLoading(false); }
+        if (!cancelled) { 
+          setApiError(e instanceof Error ? e.message : String(e)); 
+          setLoading(false); 
+        }
       });
 
     return () => {
@@ -57,9 +58,9 @@ export function VideoPlayer({ channel, onClose }: Props) {
   }, []);
 
   useEffect(() => {
-    resetHideTimer();
-    return () => { if (hideTimer.current) clearTimeout(hideTimer.current); };
-  }, [resetHideTimer]);
+    const timer = setTimeout(() => setShowControls(false), 3500);
+    return () => clearTimeout(timer);
+  }, []);
 
   // Keyboard
   useEffect(() => {
