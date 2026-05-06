@@ -1,5 +1,6 @@
 # tablo-web
 
+![CI](https://github.com/trevor-viljoen/tablo-web/actions/workflows/ci.yml/badge.svg)
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/trevor-viljoen/tablo-web?style=flat-square)
 ![GitHub top language](https://img.shields.io/github/languages/top/trevor-viljoen/tablo-web?style=flat-square)
 ![GitHub language count](https://img.shields.io/github/languages/count/trevor-viljoen/tablo-web?style=flat-square)
