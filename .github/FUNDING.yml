@@ -1,2 +1,3 @@
 github: trevor-viljoen
-custom: ["https://paypal.me/trevorviljoen"]
+custom:
+  - https://paypal.me/trevorviljoen
