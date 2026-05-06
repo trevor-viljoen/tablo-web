@@ -60,7 +60,7 @@ A modern, responsive web application for your Tablo (Gen 4) devices. Built with 
 ## Architecture
 
 - **Frontend:** React + Vite + Tailwind CSS + hls.js.
-- **Backend:** FastAPI (Python) + FFmpeg for transcoding.
+- **Backend:** FastAPI (Python) + FFmpeg for transcoding + [tablo-api](https://github.com/trevor-viljoen/tablo-api).
 - **Proxy:** Nginx handles routing between the frontend and backend containers.
 
 ---
@@ -87,3 +87,4 @@ If you find this project useful and would like to support its development, you c
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 > Tablo and the Tablo logo are trademarks of Nuvyyo Inc.
+marks of Nuvyyo Inc.
