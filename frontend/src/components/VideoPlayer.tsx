@@ -68,10 +68,10 @@ export function VideoPlayer({ channel, onClose }: Props) {
   // iOS Safari uses webkitEnterFullscreen on the video element itself;
   // standard requestFullscreen() is not supported on iOS.
   const enterFullscreen = useCallback(() => {
-    const video = videoRef.current;
+    const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
     if (!video) return;
-    if ((video as any).webkitEnterFullscreen) {
-      (video as any).webkitEnterFullscreen();
+    if (video.webkitEnterFullscreen) {
+      video.webkitEnterFullscreen();
     } else {
       video.requestFullscreen?.();
     }

@@ -46,9 +46,9 @@ function useGridStream() {
     const controller = new AbortController();
     abortRef.current = controller;
     const map = new Map<string, GridChannel>();
-    setLoading(true);
 
     async function run() {
+      setLoading(true);
       try {
         for await (const ch of api.guideGridStream(controller.signal)) {
           if (controller.signal.aborted) break;

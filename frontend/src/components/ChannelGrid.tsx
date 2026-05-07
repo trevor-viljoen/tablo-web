@@ -36,8 +36,8 @@ function useGuideStream(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
 
-    startStream();
-    const interval = setInterval(startStream, 60_000);
+    void startStream(); // eslint-disable-line react-hooks/set-state-in-effect
+    const interval = setInterval(() => void startStream(), 60_000);
 
     return () => {
       abortRef.current?.abort();
