@@ -7,6 +7,7 @@ from urllib.parse import urljoin, urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from ..state import state
 
@@ -83,7 +84,7 @@ async def transcoded_stream(session_id: str, path: str, request: Request):
 async def start_stream(
     identifier: str,
     request: Request,
-    transcode: bool | None = Query(default=None)
+    transcode: bool = Query(default=False)
 ):
     if not state.is_authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -96,11 +97,6 @@ async def start_stream(
         raise HTTPException(status_code=502, detail=f"Stream error: {e}")
 
     # NOTE: We use root-relative paths for the frontend so it works through the proxy
-    if transcode is None:
-        ua = request.headers.get("user-agent", "").lower()
-        is_browser = any(x in ua for x in ["mozilla", "chrome", "safari", "firefox", "edge"])
-        transcode = is_browser
-
     if transcode:
         await start_transcoder(session_id, sess.stream.playlist_url)
         stream_url = f"/api/transcoded/{session_id}/playlist.m3u8"
@@ -121,6 +117,8 @@ async def start_stream(
 
 @router.delete("/stream/{session_id}")
 async def stop_stream(session_id: str):
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     if proc := transcode_procs.pop(session_id, None):
         proc.kill()
         try:
@@ -163,36 +161,89 @@ async def hls_proxy(session_id: str, path: str, request: Request):
         if query:
             target_url += "?" + query
 
+    # Forward relevant headers (like Range)
+    headers = {}
+    if range_header := request.headers.get("range"):
+        headers["Range"] = range_header
+
     try:
-        resp = await state.http.get(target_url, follow_redirects=True)
-        resp.raise_for_status()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Proxy error: {e}")
+        # Use a generator to keep the httpx response context alive while streaming
+        async def stream_generator():
+            async with state.http.stream("GET", target_url, headers=headers, follow_redirects=True) as resp:
+                content_type = resp.headers.get("content-type", "application/octet-stream")
+                
+                # Special handling for manifests
+                if "mpegurl" in content_type.lower() or path.endswith(".m3u8"):
+                    body = await resp.aread()
+                    rewritten = _rewrite_manifest(body.decode("utf-8", errors="ignore"), session_id, target_url)
+                    yield rewritten.encode("utf-8")
+                    return
 
-    content_type = resp.headers.get("content-type", "application/octet-stream")
-    hls_type = "application/vnd.apple.mpegurl"
+                # Stream segments
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
 
-    if "mpegurl" in content_type.lower() or path.endswith(".m3u8"):
-        rewritten = _rewrite_manifest(resp.text, session_id, target_url)
-        return Response(
-            content=rewritten, 
-            media_type=hls_type,
-            headers={
-                "Cache-Control": "no-cache", 
-                "Access-Control-Allow-Origin": "*",
-                "Content-Disposition": "inline"
-            }
+        # We need a first pass to get the headers/status without closing the stream
+        # This is tricky with StreamingResponse. Let's do a simple request for headers first
+        # OR just use a more robust streaming pattern.
+        
+        # Optimized: Start the stream, grab headers, then return the StreamingResponse
+        # utilizing the same context.
+        resp = await state.http.send(
+            state.http.build_request("GET", target_url, headers=headers),
+            stream=True,
+            follow_redirects=True
         )
 
-    return StreamingResponse(
-        _iter_bytes(resp),
-        media_type=content_type,
-        headers={"Cache-Control": "max-age=30", "Access-Control-Allow-Origin": "*"},
-    )
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        hls_type = "application/vnd.apple.mpegurl"
 
+        if "mpegurl" in content_type.lower() or path.endswith(".m3u8"):
+            try:
+                body = await resp.aread()
+                rewritten = _rewrite_manifest(body.decode("utf-8", errors="ignore"), session_id, target_url)
+                return Response(
+                    content=rewritten, 
+                    media_type=hls_type,
+                    headers={
+                        "Cache-Control": "no-cache", 
+                        "Access-Control-Allow-Origin": "*",
+                        "Content-Disposition": "inline"
+                    }
+                )
+            finally:
+                await resp.aclose()
 
-async def _iter_bytes(resp):
-    yield resp.content
+        response_headers = {
+            "Cache-Control": resp.headers.get("cache-control", "max-age=30"),
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Range, If-Range",
+            "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+            "Accept-Ranges": "bytes",
+        }
+
+        # Force correct MIME type for HLS segments on iOS
+        if path.endswith(".ts"):
+            response_headers["Content-Type"] = "video/mp2t"
+        else:
+            response_headers["Content-Type"] = content_type
+
+        if "content-range" in resp.headers:
+            response_headers["Content-Range"] = resp.headers["content-range"]
+        if "content-length" in resp.headers:
+            response_headers["Content-Length"] = resp.headers["content-length"]
+
+        return StreamingResponse(
+            resp.aiter_bytes(),
+            status_code=resp.status_code,
+            headers=response_headers,
+            background=BackgroundTask(resp.aclose)
+        )
+
+    except Exception as e:
+        print(f"Proxy error for {target_url}: {e}")
+        raise HTTPException(status_code=502, detail=f"Proxy error: {e}")
 
 
 def _rewrite_manifest(manifest: str, session_id: str, playlist_url: str) -> str:
@@ -232,6 +283,8 @@ def _rewrite_manifest(manifest: str, session_id: str, playlist_url: str) -> str:
 
 @router.get("/transcode/status/{session_id}")
 async def transcode_status(session_id: str):
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     proc = transcode_procs.get(session_id)
     session_dir = TRANSCODE_DIR / session_id
     

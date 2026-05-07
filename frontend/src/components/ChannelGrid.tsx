@@ -1,10 +1,52 @@
-import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { api, type GuideChannel, type GridChannel } from "../api/tablo";
 import { ChannelCard } from "./ChannelCard";
 import { VideoPlayer } from "./VideoPlayer";
 import { LibraryView } from "./LibraryView";
 import { GuideGridView } from "./GuideGridView";
+import { ProfileMenu } from "./ProfileMenu";
+
+function useGuideStream(enabled: boolean) {
+  const [channels, setChannels] = useState<GuideChannel[]>([]);
+  const [loading, setLoading] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const startStream = useCallback(async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const map = new Map<string, GuideChannel>();
+    setLoading(true);
+
+    try {
+      for await (const ch of api.guideStream(controller.signal)) {
+        if (controller.signal.aborted) break;
+        map.set(ch.identifier, ch);
+        setChannels([...map.values()]);
+        setLoading(false);
+      }
+    } catch (e) {
+      if (!controller.signal.aborted) console.error("Guide stream error:", e);
+    } finally {
+      if (!controller.signal.aborted) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    startStream();
+    const interval = setInterval(startStream, 60_000);
+
+    return () => {
+      abortRef.current?.abort();
+      clearInterval(interval);
+    };
+  }, [enabled, startStream]);
+
+  return { channels, loading };
+}
 
 interface Props {
   onLogout: () => void;
@@ -12,32 +54,64 @@ interface Props {
 
 type Tab = "live" | "grid" | "library";
 
+type ContentFilter = "all" | "movies" | "sports" | "news" | "reality" | "documentary" | "ota" | "fast";
+
+const CONTENT_FILTERS: { id: ContentFilter; label: string; icon: string }[] = [
+  { id: "all",          label: "All",          icon: "⊞" },
+  { id: "movies",       label: "Movies",        icon: "🎬" },
+  { id: "sports",       label: "Sports",        icon: "🏆" },
+  { id: "news",         label: "News",          icon: "📰" },
+  { id: "reality",      label: "Reality",       icon: "📺" },
+  { id: "documentary",  label: "Documentary",   icon: "🎞" },
+  { id: "ota",          label: "Broadcast",     icon: "📡" },
+  { id: "fast",         label: "Streaming",     icon: "⚡" },
+];
+
+function matchesContentFilter(ch: GuideChannel, f: ContentFilter): boolean {
+  if (f === "all") return true;
+  if (f === "ota")  return ch.kind === "ota";
+  if (f === "fast") return ch.kind === "ott";
+  const prog = ch.current_program;
+  if (!prog) return false;
+  const genres = prog.genres ?? [];
+  if (f === "movies")       return prog.kind === "movieAiring";
+  if (f === "sports")       return prog.kind === "sportEvent" || genres.some(g => /sport/i.test(g));
+  if (f === "news")         return genres.some(g => /news/i.test(g));
+  if (f === "reality")      return genres.some(g => /reality/i.test(g));
+  if (f === "documentary")  return genres.some(g => /documentary/i.test(g));
+  return true;
+}
+
 export function ChannelGrid({ onLogout }: Props) {
   const [playing, setPlaying] = useState<GuideChannel | null>(null);
   const [filter, setFilter] = useState("");
+  const [contentFilter, setContentFilter] = useState<ContentFilter>("all");
   const [activeTab, setTab] = useState<Tab>("live");
   const [now, setNow] = useState(() => Date.now());
+  const [userEmail, setUserEmail] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
 
-  const { data: channels = [], isLoading } = useQuery({
-    queryKey: ["guide"],
-    queryFn: () => api.guide(),
-    staleTime: 60_000,
-    refetchInterval: 60_000,
-    enabled: activeTab === "live"
-  });
+  useEffect(() => {
+    api.status().then(s => setUserEmail(s.email)).catch(() => {});
+  }, []);
 
-  const filtered = channels.filter(ch =>
-    !filter || 
-    ch.call_sign.toLowerCase().includes(filter.toLowerCase()) ||
-    ch.network.toLowerCase().includes(filter.toLowerCase()) ||
-    ch.current_program?.title?.toLowerCase().includes(filter.toLowerCase()) ||
-    ch.display_name.includes(filter)
-  );
+  const { channels, loading: isLoading } = useGuideStream(activeTab === "live");
+
+  const filtered = channels.filter(ch => {
+    if (!matchesContentFilter(ch, contentFilter)) return false;
+    if (!filter) return true;
+    const q = filter.toLowerCase();
+    return (
+      ch.call_sign.toLowerCase().includes(q) ||
+      ch.network.toLowerCase().includes(q) ||
+      ch.display_name.toLowerCase().includes(q) ||
+      (ch.current_program?.title?.toLowerCase().includes(q) ?? false)
+    );
+  });
 
   const handlePlay = (ch: GuideChannel | GridChannel) => {
     const isGrid = 'airings' in ch;
@@ -133,12 +207,7 @@ export function ChannelGrid({ onLogout }: Props) {
             )}
 
             <div className="flex items-center gap-4 ml-4">
-              <button
-                onClick={onLogout}
-                className="px-4 py-2 rounded-xl glass text-xs font-bold text-white/40 hover:text-red-400 hover:bg-red-500/10 transition border border-transparent hover:border-red-500/20"
-              >
-                LOGOUT
-              </button>
+              <ProfileMenu email={userEmail} onLogout={onLogout} />
             </div>
           </div>
         </header>
@@ -150,14 +219,32 @@ export function ChannelGrid({ onLogout }: Props) {
               <div className="mb-8 flex items-baseline justify-between">
                 <div>
                   <h1 className="text-3xl font-black tracking-tight text-white mb-2 uppercase italic">ON AIR NOW</h1>
-                  <p className="text-white/30 text-sm font-medium tracking-wide uppercase">Browser your local guide and start watching instantly</p>
+                  <p className="text-white/30 text-sm font-medium tracking-wide uppercase">Browse your local guide and start watching instantly</p>
                 </div>
                 <div className="text-right">
                   <p className="text-2xl font-mono text-accent font-bold">
-                    {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </p>
                   <p className="text-[10px] text-white/20 font-black tracking-widest uppercase">Live Guide</p>
                 </div>
+              </div>
+
+              {/* Content type filter chips */}
+              <div className="flex gap-2 mb-6 overflow-x-auto pb-1 no-scrollbar">
+                {CONTENT_FILTERS.map(f => (
+                  <button
+                    key={f.id}
+                    onClick={() => setContentFilter(f.id)}
+                    className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition
+                      ${contentFilter === f.id
+                        ? "bg-accent text-white shadow-lg shadow-accent/30"
+                        : "bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/80 border border-white/5"
+                      }`}
+                  >
+                    <span>{f.icon}</span>
+                    <span>{f.label}</span>
+                  </button>
+                ))}
               </div>
 
               {isLoading && !channels.length ? (
@@ -170,6 +257,12 @@ export function ChannelGrid({ onLogout }: Props) {
                   {filtered.map(ch => (
                     <ChannelCard key={ch.identifier} channel={ch} now={now} onClick={() => setPlaying(ch)} />
                   ))}
+                  {filtered.length === 0 && channels.length > 0 && (
+                    <div className="col-span-full flex flex-col items-center justify-center py-24 text-white/20">
+                      <p className="text-4xl mb-3">📭</p>
+                      <p className="text-sm font-bold uppercase tracking-widest">Nothing on right now</p>
+                    </div>
+                  )}
                 </div>
               )}
             </>

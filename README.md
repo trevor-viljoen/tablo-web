@@ -73,6 +73,22 @@ A modern, responsive web application for your Tablo (Gen 4) devices. Built with 
 
 ---
 
+## Reporting Bugs
+
+If you encounter a bug, please follow these steps to help us diagnose the issue:
+
+1. **Generate a debug report** — click the profile icon in the top-right corner of the app, then choose **Download Debug Report**. This creates a `tablo-debug-<timestamp>.json` file containing server diagnostics and browser info. It contains no passwords or personal information.
+
+2. **Open an issue** on [GitHub Issues](https://github.com/trevor-viljoen/tablo-web/issues) and include:
+   - A clear description of what happened and what you expected.
+   - Steps to reproduce the issue.
+   - Your browser and OS version.
+   - The debug report JSON file attached to the issue.
+
+3. **Browser console logs** — if the app shows an error, open your browser's developer tools (F12), go to the **Console** tab, and copy any red error messages into the issue.
+
+---
+
 ## Support & Donations
 
 If you find this project useful and would like to support its development, you can buy me a coffee!

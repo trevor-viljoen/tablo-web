@@ -1,5 +1,6 @@
 """Global in-process state — auth, active device, live stream sessions."""
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -28,6 +29,7 @@ class StreamSession:
 class AppState:
     def __init__(self) -> None:
         self.auth: TabloAuth | None = None
+        self.email: str | None = None
         self.devices: list[TabloDevice] = []
         self.active_device: TabloDevice | None = None
         self._channels: list[TabloChannel] | None = None
@@ -47,6 +49,7 @@ class AppState:
             password = cfg.get("password")
             if email and password:
                 self.auth = TabloAuth(email, password)
+                self.email = email
         except Exception:
             pass
 
@@ -58,6 +61,7 @@ class AppState:
         if CONFIG_PATH.exists():
             CONFIG_PATH.unlink()
         self.auth = None
+        self.email = None
         self.devices = []
         self.active_device = None
         self._channels = None
@@ -71,6 +75,7 @@ class AppState:
         auth = TabloAuth(email, password)
         devices = await _run_sync(auth.discover)
         self.auth = auth
+        self.email = email
         self.devices = devices
         self.active_device = devices[0] if len(devices) == 1 else None
         self._channels = None
@@ -120,7 +125,14 @@ class AppState:
         client = TabloClient(self.active_device)
         stream = await _run_sync(client.watch, identifier)
         session_id = uuid.uuid4().hex
-        sess = StreamSession(stream=stream, base_url=self.active_device.local_url.rstrip("/"))
+
+        # Deriving base_url from the playlist_url ensures we use the correct port
+        # for segments and nested playlists (e.g. port 80 vs 8887).
+        from urllib.parse import urlparse
+        parsed = urlparse(stream.playlist_url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        sess = StreamSession(stream=stream, base_url=base_url)
         with _lock:
             self.streams[session_id] = sess
         return session_id, sess
@@ -150,56 +162,121 @@ class AppState:
         resp.raise_for_status()
         return resp.json()
 
-    async def get_guide_data(self) -> list[dict]:
-        """Aggregate channels with logos and current airing info."""
+    def _cloud_headers(self) -> tuple[str, dict]:
+        """Return (cloud_base_url, auth_headers) for the active device."""
+        dev = self.active_device
+        return "https://lighthousetv.ewscloud.com", {
+            "Authorization": f"Bearer {dev.account_token}",
+            "Lighthouse": dev.lighthouse_token,
+            "User-Agent": "Tablo-FAST/2.0.0 (Mobile; iPhone; iOS 16.6)",
+        }
+
+    async def _fetch_cloud_channels(self) -> tuple[dict, list[str]]:
+        """Fetch OTT channel list from the cloud API (single request, fast).
+
+        Returns (logo_map, identifiers).
+        """
         if self.active_device is None:
-            raise RuntimeError("No active device")
-
-        import asyncio
-
-        # 1. Get base channels (cloud)
-        channels = await self.channels()
-        
-        # 2. Get local channel detail paths
+            return {}, []
+        host, headers = self._cloud_headers()
         try:
-            local_paths = await self.request_device("GET", "/guide/channels")
+            resp = await self._http.get(
+                f"{host}/api/v2/account/{self.active_device.lighthouse_token}/guide/channels/",
+                headers=headers,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            channels = resp.json()
         except Exception:
-            local_paths = []
+            return {}, []
 
-        # 3. Fetch channel details in parallel (limit to first 300 for safety)
+        logo_map: dict = {}
+        identifiers: list[str] = []
+        for ch in channels:
+            identifier = ch.get("identifier")
+            if not identifier:
+                continue
+            identifiers.append(identifier)
+            logos = ch.get("logos") or []
+            logo = next((lg["url"] for lg in logos if lg.get("kind") == "originalLarge"), None)
+            if not logo:
+                logo = next((lg["url"] for lg in logos if lg.get("kind") == "lightLarge"), None)
+            if not logo:
+                logo = next((lg.get("url") for lg in logos if lg.get("url")), None)
+            if logo:
+                logo_map[identifier] = logo
+
+        return logo_map, identifiers
+
+    async def _fetch_cloud_airings(self, identifiers: list[str]) -> dict:
+        """Fetch current airing for each OTT channel identifier (parallel, semaphore-limited).
+
+        Returns airing_map keyed by identifier.
+        """
+        if self.active_device is None or not identifiers:
+            return {}
+        host, headers = self._cloud_headers()
+        token = self.active_device.lighthouse_token
+        sem = asyncio.Semaphore(20)
+
+        async def fetch_one(ident: str):
+            async with sem:
+                try:
+                    r = await self._http.get(
+                        f"{host}/api/v2/account/{token}/guide/channels/{ident}/airings/",
+                        headers=headers,
+                        timeout=10,
+                    )
+                    if r.status_code == 200:
+                        items = r.json()
+                        if isinstance(items, list) and items:
+                            a = items[0]
+                            return ident, {
+                                "title": a.get("title") or a.get("show", {}).get("title"),
+                                "description": a.get("description"),
+                                "start": a.get("datetime"),
+                                "duration": a.get("duration"),
+                                "genres": a.get("genres") or [],
+                                "kind": a.get("kind"),
+                            }
+                except Exception:
+                    pass
+                return ident, None
+
+        results = await asyncio.gather(*[fetch_one(i) for i in identifiers])
+        return {ident: data for ident, data in results if data is not None}
+
+    async def _fetch_cloud_data(self) -> tuple[dict, dict]:
+        """Fetch OTT channel logos and current airings from the Tablo cloud API.
+
+        Returns (logo_map, airing_map) both keyed by channel identifier.
+        """
+        logo_map, identifiers = await self._fetch_cloud_channels()
+        airing_map = await self._fetch_cloud_airings(identifiers)
+        return logo_map, airing_map
+
+    async def _fetch_guide_enrichment_local(self) -> tuple[dict, dict, dict]:
+        """Fetch local device logos and current airings (OTA only).
+
+        Returns (logo_map, path_to_ident, channel_airing_map).
+        """
+        path_results = await asyncio.gather(
+            self.request_device("GET", "/guide/channels"),
+            self.request_device("GET", "/guide/airings"),
+            return_exceptions=True,
+        )
+        detail_paths = path_results[0] if not isinstance(path_results[0], Exception) else []
+        airing_paths = path_results[1] if not isinstance(path_results[1], Exception) else []
+
         sem = asyncio.Semaphore(30)
+
         async def fetch_detail(path):
             async with sem:
                 try:
-                    return await self.request_device("GET", path)
+                    return path, await self.request_device("GET", path)
                 except Exception:
-                    return None
+                    return path, None
 
-        details = await asyncio.gather(*[fetch_detail(p) for p in local_paths[:300]])
-        
-        # Map channel_identifier -> logo_url
-        logo_map = {}
-        for d in details:
-            if d and "channel" in d:
-                c_info = d["channel"]
-                ident = c_info.get("channel_identifier")
-                logos = c_info.get("logos", [])
-                # Prefer originalLarge, then lightLarge
-                logo = next((logo_entry["url"] for logo_entry in logos if logo_entry["kind"] == "originalLarge"), None)
-                if not logo:
-                    logo = next((logo_entry["url"] for logo_entry in logos if logo_entry["kind"] == "lightLarge"), None)
-                if ident and logo:
-                    logo_map[ident] = logo
-
-        # 4. Get current airings
-        try:
-            airing_paths = await self.request_device("GET", "/guide/airings")
-        except Exception:
-            airing_paths = []
-
-        # We'll fetch a larger number of airings to cover OTA and OTT channels.
-        # Tablo Gen 4 can have 100+ FAST channels.
-        sem = asyncio.Semaphore(30)
         async def fetch_airing(path):
             async with sem:
                 try:
@@ -207,54 +284,157 @@ class AppState:
                 except Exception:
                     return None
 
-        # Increase limit to 800 to cover more channels (especially OTT)
-        airing_details = await asyncio.gather(*[fetch_airing(p) for p in airing_paths[:800]])
-        
-        # Map channel_path -> current_airing
-        channel_airing_map = {}
+        detail_results, airing_results = await asyncio.gather(
+            asyncio.gather(*[fetch_detail(p) for p in detail_paths[:300]]),
+            asyncio.gather(*[fetch_airing(p) for p in airing_paths[:800]]),
+        )
+
+        logo_map: dict = {}
+        path_to_ident: dict = {}
+        for path, d in detail_results:
+            if d and "channel" in d:
+                c_info = d["channel"]
+                ident = c_info.get("channel_identifier")
+                path_to_ident[d.get("path", path)] = ident
+                logos = c_info.get("logos", [])
+                logo = next(( logo["url"] for logo in logos if logo["kind"] == "originalLarge"), None)
+                if not logo:
+                    logo = next(( logo["url"] for logo in logos if logo["kind"] == "lightLarge"), None)
+                if ident and logo:
+                    logo_map[ident] = logo
+
         now = datetime.now(timezone.utc)
-        
-        for a in airing_details:
+        channel_airing_map: dict = {}
+        for a in airing_results:
             if not a or "airing_details" not in a:
                 continue
-            
             ad = a["airing_details"]
             try:
                 start_str = ad.get("datetime")
                 if not start_str:
                     continue
-                
-                # Parse ISO date (e.g. 2026-05-06T11:00Z)
                 start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
                 duration = ad.get("duration", 0)
                 end = start + timedelta(seconds=duration)
-                
                 if start <= now < end:
                     c_path = ad.get("channel_path")
                     if c_path:
-                        # Store show info
                         channel_airing_map[c_path] = {
                             "title": ad.get("show_title"),
                             "description": a.get("episode", {}).get("description") or a.get("series", {}).get("description"),
                             "start": start_str,
-                            "duration": duration
+                            "duration": duration,
+                            "genres": ad.get("genres") or [],
+                            "kind": ad.get("event_type"),
                         }
             except Exception:
                 continue
 
-        # 5. Build final guide
-        # We need to link channel identifiers back to paths.
-        # Let's rebuild the map more carefully.
-        path_to_ident = {}
-        for d in details:
+        return logo_map, path_to_ident, channel_airing_map
+
+    async def _fetch_guide_enrichment(self) -> tuple[dict, dict, dict, dict]:
+        """Fetch logo and airing data from local device and cloud in parallel.
+
+        Returns (logo_map, path_to_ident, channel_airing_map, cloud_airing_map).
+        channel_airing_map is keyed by local channel path (OTA only).
+        cloud_airing_map is keyed by channel identifier (OTT).
+        """
+        path_results = await asyncio.gather(
+            self.request_device("GET", "/guide/channels"),
+            self.request_device("GET", "/guide/airings"),
+            self._fetch_cloud_data(),
+            return_exceptions=True,
+        )
+        detail_paths = path_results[0] if not isinstance(path_results[0], Exception) else []
+        airing_paths = path_results[1] if not isinstance(path_results[1], Exception) else []
+        cloud_logos: dict
+        cloud_airing_map: dict
+        if isinstance(path_results[2], Exception):
+            cloud_logos, cloud_airing_map = {}, {}
+        else:
+            cloud_logos, cloud_airing_map = path_results[2]
+
+        sem = asyncio.Semaphore(30)
+
+        async def fetch_detail(path):
+            async with sem:
+                try:
+                    return path, await self.request_device("GET", path)
+                except Exception:
+                    return path, None
+
+        async def fetch_airing(path):
+            async with sem:
+                try:
+                    return await self.request_device("GET", path)
+                except Exception:
+                    return None
+
+        detail_results, airing_results = await asyncio.gather(
+            asyncio.gather(*[fetch_detail(p) for p in detail_paths[:300]]),
+            asyncio.gather(*[fetch_airing(p) for p in airing_paths[:800]]),
+        )
+
+        logo_map: dict = {}
+        path_to_ident: dict = {}
+        for path, d in detail_results:
             if d and "channel" in d:
-                path_to_ident[d["path"]] = d["channel"]["channel_identifier"]
+                c_info = d["channel"]
+                ident = c_info.get("channel_identifier")
+                path_to_ident[d.get("path", path)] = ident
+                logos = c_info.get("logos", [])
+                logo = next(( logo["url"] for logo in logos if logo["kind"] == "originalLarge"), None)
+                if not logo:
+                    logo = next(( logo["url"] for logo in logos if logo["kind"] == "lightLarge"), None)
+                if ident and logo:
+                    logo_map[ident] = logo
+
+        now = datetime.now(timezone.utc)
+        channel_airing_map: dict = {}
+        for a in airing_results:
+            if not a or "airing_details" not in a:
+                continue
+            ad = a["airing_details"]
+            try:
+                start_str = ad.get("datetime")
+                if not start_str:
+                    continue
+                start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                duration = ad.get("duration", 0)
+                end = start + timedelta(seconds=duration)
+                if start <= now < end:
+                    c_path = ad.get("channel_path")
+                    if c_path:
+                        channel_airing_map[c_path] = {
+                            "title": ad.get("show_title"),
+                            "description": a.get("episode", {}).get("description") or a.get("series", {}).get("description"),
+                            "start": start_str,
+                            "duration": duration,
+                            "genres": ad.get("genres") or [],
+                            "kind": ad.get("event_type"),
+                        }
+            except Exception:
+                continue
+
+        # Merge cloud logos as fallback (local logos take priority)
+        for ident, url in cloud_logos.items():
+            if ident not in logo_map:
+                logo_map[ident] = url
+
+        return logo_map, path_to_ident, channel_airing_map, cloud_airing_map
+
+    async def get_guide_data(self) -> list[dict]:
+        """Aggregate channels with logos and current airing info."""
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+
+        channels = await self.channels()
+        logo_map, path_to_ident, channel_airing_map, cloud_airing_map = await self._fetch_guide_enrichment()
 
         guide = []
         for c in channels:
-            # Find the path for this channel to get its airing
-            c_path = next((path for path, ident in path_to_ident.items() if ident == c.identifier), None)
-            
+            c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
+            current_program = (channel_airing_map.get(c_path) if c_path else None) or cloud_airing_map.get(c.identifier)
             guide.append({
                 "identifier": c.identifier,
                 "call_sign": c.call_sign,
@@ -264,10 +444,58 @@ class AppState:
                 "kind": c.kind,
                 "display_name": c.display_name,
                 "logo_url": logo_map.get(c.identifier),
-                "current_program": channel_airing_map.get(c_path) if c_path else None
+                "current_program": current_program,
             })
-            
+
         return guide
+
+    async def stream_guide_data(self):
+        """Async generator for NDJSON guide streaming.
+
+        Yields basic channel records immediately, then enriched records once
+        logo/airing data is available. The frontend merges by identifier.
+        """
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+
+        channels = await self.channels()
+
+        def _stub(c, logo_url=None, current_program=None):
+            return json.dumps({
+                "identifier": c.identifier,
+                "call_sign": c.call_sign,
+                "major": c.major,
+                "minor": c.minor,
+                "network": c.network,
+                "kind": c.kind,
+                "display_name": c.display_name,
+                "logo_url": logo_url,
+                "current_program": current_program,
+            }) + "\n"
+
+        # Phase 1: bare stubs so the UI renders immediately
+        for c in channels:
+            yield _stub(c)
+
+        # Phase 2: cloud channel list (single request ~1-2s) → logos appear fast
+        cloud_logo_map, cloud_identifiers = await self._fetch_cloud_channels()
+        for c in channels:
+            if c.identifier in cloud_logo_map:
+                yield _stub(c, logo_url=cloud_logo_map[c.identifier])
+
+        # Phase 3: full enrichment — local OTA airing info + OTT per-channel airings
+        local_task = asyncio.create_task(self._fetch_guide_enrichment_local())
+        cloud_airing_task = asyncio.create_task(self._fetch_cloud_airings(cloud_identifiers))
+        local_logo_map, path_to_ident, channel_airing_map = await local_task
+        cloud_airing_map = await cloud_airing_task
+
+        # Merge logos: local OTA logos take priority over cloud fallback
+        final_logo_map = {**cloud_logo_map, **local_logo_map}
+
+        for c in channels:
+            c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
+            current_program = (channel_airing_map.get(c_path) if c_path else None) or cloud_airing_map.get(c.identifier)
+            yield _stub(c, logo_url=final_logo_map.get(c.identifier), current_program=current_program)
 
     async def get_recordings(self) -> list[dict]:
         """Fetch all recordings from the device."""
@@ -301,23 +529,30 @@ class AppState:
         recordings = await asyncio.gather(*[fetch_recording(p) for p in paths[:50]])
         return [r for r in recordings if r]
 
-    async def get_grid_guide(self) -> list[dict]:
-        """Fetch a traditional grid guide (channels + multiple upcoming airings)."""
-        if self.active_device is None:
-            raise RuntimeError("No active device")
+    async def _build_grid_enrichment(self) -> tuple[dict, dict, dict, dict]:
+        """Fetch logos and airings for the grid guide.
 
-        import asyncio
-
-        # 1. Get base channels
-        channels = await self.channels()
-        
-        # 2. Get local channel detail paths to map identifier -> path
-        try:
-            local_paths = await self.request_device("GET", "/guide/channels")
-        except Exception:
-            local_paths = []
+        Returns (logo_map, path_to_ident, channel_to_airings, cloud_airing_map).
+        Fetches channel details, airings, and cloud data concurrently.
+        Airing count is capped at 1000 (the list is time-ordered from now).
+        """
+        path_results = await asyncio.gather(
+            self.request_device("GET", "/guide/channels"),
+            self.request_device("GET", "/guide/airings"),
+            self._fetch_cloud_data(),
+            return_exceptions=True,
+        )
+        local_paths = path_results[0] if not isinstance(path_results[0], Exception) else []
+        airing_paths = path_results[1] if not isinstance(path_results[1], Exception) else []
+        cloud_logos: dict
+        cloud_airing_map: dict
+        if isinstance(path_results[2], Exception):
+            cloud_logos, cloud_airing_map = {}, {}
+        else:
+            cloud_logos, cloud_airing_map = path_results[2]
 
         sem = asyncio.Semaphore(30)
+
         async def fetch_detail(path):
             async with sem:
                 try:
@@ -325,26 +560,6 @@ class AppState:
                 except Exception:
                     return None
 
-        details = await asyncio.gather(*[fetch_detail(p) for p in local_paths[:300]])
-        path_to_ident = {}
-        logo_map = {}
-        for d in details:
-            if d and "channel" in d:
-                c_info = d["channel"]
-                ident = c_info.get("channel_identifier")
-                path_to_ident[d["path"]] = ident
-                logos = c_info.get("logos", [])
-                logo = next((logo_entry["url"] for logo_entry in logos if logo_entry["kind"] == "originalLarge"), None)
-                if ident and logo:
-                    logo_map[ident] = logo
-
-        # 3. Get airings
-        try:
-            airing_paths = await self.request_device("GET", "/guide/airings")
-        except Exception:
-            airing_paths = []
-
-        # We'll fetch more airings to build a grid (next 6 hours roughly)
         async def fetch_airing(path):
             async with sem:
                 try:
@@ -352,11 +567,31 @@ class AppState:
                 except Exception:
                     return None
 
-        # Fetch first 1500 airing details to cover more channels/time
-        airing_details = await asyncio.gather(*[fetch_airing(p) for p in airing_paths[:1500]])
-        
-        # Group airings by channel_path
-        channel_to_airings = {}
+        details, airing_details = await asyncio.gather(
+            asyncio.gather(*[fetch_detail(p) for p in local_paths[:300]]),
+            asyncio.gather(*[fetch_airing(p) for p in airing_paths[:1000]]),
+        )
+
+        path_to_ident: dict = {}
+        logo_map: dict = {}
+        for d in details:
+            if d and "channel" in d:
+                c_info = d["channel"]
+                ident = c_info.get("channel_identifier")
+                path_to_ident[d["path"]] = ident
+                logos = c_info.get("logos", [])
+                logo = next(( logo["url"] for logo in logos if logo["kind"] == "originalLarge"), None)
+                if not logo:
+                    logo = next(( logo["url"] for logo in logos if logo["kind"] == "lightLarge"), None)
+                if ident and logo:
+                    logo_map[ident] = logo
+
+        for ident, url in cloud_logos.items():
+            if ident not in logo_map:
+                logo_map[ident] = url
+
+        cloud_airing_map_local = cloud_airing_map  # rename for closure clarity
+        channel_to_airings: dict = {}
         for a in airing_details:
             if not a or "airing_details" not in a:
                 continue
@@ -364,38 +599,71 @@ class AppState:
             c_path = ad.get("channel_path")
             if not c_path:
                 continue
-            
-            if c_path not in channel_to_airings:
-                channel_to_airings[c_path] = []
-                
-            channel_to_airings[c_path].append({
+            channel_to_airings.setdefault(c_path, []).append({
                 "title": ad.get("show_title"),
                 "description": a.get("episode", {}).get("description") or a.get("series", {}).get("description"),
                 "start": ad.get("datetime"),
-                "duration": ad.get("duration")
+                "duration": ad.get("duration"),
+                "genres": ad.get("genres") or [],
+                "kind": ad.get("event_type"),
             })
 
-        # 4. Assemble final grid
-        grid = []
+        return logo_map, path_to_ident, channel_to_airings, cloud_airing_map_local
+
+    def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_airing_map: dict) -> dict:
+        c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
+        airings = channel_to_airings.get(c_path, []) if c_path else []
+        # For OTT channels with no local airings, inject cloud current program
+        if not airings and c.identifier in cloud_airing_map:
+            airings = [cloud_airing_map[c.identifier]]
+        airings.sort(key=lambda x: x.get("start") or "")
+        return {
+            "identifier": c.identifier,
+            "call_sign": c.call_sign,
+            "major": c.major,
+            "minor": c.minor,
+            "network": c.network,
+            "display_name": c.display_name,
+            "logo_url": logo_map.get(c.identifier),
+            "airings": airings,
+        }
+
+    async def get_grid_guide(self) -> list[dict]:
+        """Fetch a traditional grid guide (channels + multiple upcoming airings)."""
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+        channels = await self.channels()
+        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment()
+        return [self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map) for c in channels]
+
+    async def stream_grid_guide_data(self):
+        """Async generator for NDJSON grid guide streaming.
+
+        Phase 1: emits channel stubs immediately so the grid renders at once.
+        Phase 2: emits fully-enriched rows (logos + airings) once fetching is done.
+        """
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+
+        channels = await self.channels()
+
+        # Phase 1: channel stubs — grid rows appear immediately
         for c in channels:
-            c_path = next((path for path, ident in path_to_ident.items() if ident == c.identifier), None)
-            
-            # Sort airings by time
-            airings = channel_to_airings.get(c_path, []) if c_path else []
-            airings.sort(key=lambda x: x["start"])
-            
-            grid.append({
+            yield json.dumps({
                 "identifier": c.identifier,
                 "call_sign": c.call_sign,
                 "major": c.major,
                 "minor": c.minor,
                 "network": c.network,
                 "display_name": c.display_name,
-                "logo_url": logo_map.get(c.identifier),
-                "airings": airings
-            })
-            
-        return grid
+                "logo_url": None,
+                "airings": [],
+            }) + "\n"
+
+        # Phase 2: enriched rows with logos and timelines
+        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment()
+        for c in channels:
+            yield json.dumps(self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)) + "\n"
 
     def stop_session(self, session_id: str) -> None:
         with _lock:

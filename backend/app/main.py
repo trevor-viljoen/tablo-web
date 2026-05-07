@@ -4,8 +4,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import log_buffer as _log_buffer
 from .routes import auth, channels, stream
 from .state import state, CONFIG_PATH
+
+_log_buffer.install()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

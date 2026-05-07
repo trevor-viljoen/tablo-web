@@ -26,6 +26,7 @@ class LoginResponse(BaseModel):
 async def status():
     return {
         "authenticated": state.is_authenticated,
+        "email": state.email,
         "devices": [{"sid": d.sid, "name": d.name} for d in state.devices],
         "active_sid": state.active_device.sid if state.active_device else None,
     }

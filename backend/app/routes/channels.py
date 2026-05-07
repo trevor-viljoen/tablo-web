@@ -1,6 +1,12 @@
+import platform
+import sys
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ..log_buffer import recent_logs
 from ..state import state
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
@@ -16,24 +22,67 @@ class ChannelOut(BaseModel):
     display_name: str
 
 
+@router.get("/debug-report")
+async def debug_report():
+    """Collect server-side diagnostics for bug reports (no PII)."""
+    dev = state.active_device
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "server": {
+            "python": sys.version,
+            "platform": platform.platform(),
+            "arch": platform.machine(),
+        },
+        "auth": {
+            "authenticated": state.is_authenticated,
+            "device_count": len(state.devices),
+            "active_device_name": dev.name if dev else None,
+            "active_device_sid": dev.sid if dev else None,
+        },
+        "active_streams": len(state.streams),
+        "recent_logs": list(recent_logs),
+    }
+
+
 @router.get("/local-guide")
 async def local_guide():
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return await state.request_device("GET", "/guide/channels")
 
 
 @router.get("/server-info")
 async def server_info():
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return await state.request_device("GET", "/server/info")
 
 
 @router.get("/detail")
 async def channel_detail(path: str = Query(...)):
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not path.startswith("/") or "://" in path:
+        raise HTTPException(status_code=400, detail="Invalid path")
     return await state.request_device("GET", path)
 
 
 @router.get("/airings")
 async def list_airings():
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return await state.request_device("GET", "/guide/airings")
+
+
+@router.get("/guide/stream")
+async def stream_guide():
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return StreamingResponse(
+        state.stream_guide_data(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
 
 
 @router.get("/guide")
@@ -44,6 +93,17 @@ async def get_guide():
         return await state.get_guide_data()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Guide error: {e}")
+
+
+@router.get("/guide-grid/stream")
+async def stream_guide_grid():
+    if not state.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return StreamingResponse(
+        state.stream_grid_guide_data(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
 
 
 @router.get("/guide-grid")

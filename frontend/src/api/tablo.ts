@@ -2,8 +2,17 @@ const BASE = "/api";
 
 export interface AuthStatus {
   authenticated: boolean;
+  email: string | null;
   devices: { sid: string; name: string }[];
   active_sid: string | null;
+}
+
+export interface DebugReport {
+  generated_at: string;
+  server: { python: string; platform: string; arch: string };
+  auth: { authenticated: boolean; device_count: number; active_device_name: string | null; active_device_sid: string | null };
+  active_streams: number;
+  recent_logs: string[];
 }
 
 export interface Channel {
@@ -28,6 +37,8 @@ export interface Program {
   description: string | null;
   start: string;
   duration: number;
+  genres?: string[];
+  kind?: string | null;
 }
 
 export interface GuideChannel {
@@ -56,6 +67,39 @@ export interface Recording {
   thumbnail: string | null;
 }
 
+async function* ndjsonStream<T>(path: string, signal?: AbortSignal): AsyncGenerator<T> {
+  const res = await fetch(BASE + path, { signal });
+  if (!res.ok || !res.body) throw new Error(res.statusText);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.trim()) yield JSON.parse(line) as T;
+      }
+    }
+    if (buffer.trim()) yield JSON.parse(buffer) as T;
+  } finally {
+    reader.cancel();
+  }
+}
+
+function guideStream(signal?: AbortSignal) {
+  return ndjsonStream<GuideChannel>("/channels/guide/stream", signal);
+}
+
+function guideGridStream(signal?: AbortSignal) {
+  return ndjsonStream<GridChannel>("/channels/guide-grid/stream", signal);
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, {
     headers: { "Content-Type": "application/json" },
@@ -82,10 +126,14 @@ export const api = {
 
   logout: () => req<{ ok: boolean }>("/auth/logout", { method: "DELETE" }),
 
+  debugReport: () => req<DebugReport>("/channels/debug-report"),
+
   channels: (refresh = false) =>
     req<Channel[]>(`/channels${refresh ? "?refresh=true" : ""}`),
 
   guide: () => req<GuideChannel[]>("/channels/guide"),
+  guideStream: (signal?: AbortSignal) => guideStream(signal),
+  guideGridStream: (signal?: AbortSignal) => guideGridStream(signal),
   
   guideGrid: () => req<GridChannel[]>("/channels/guide-grid"),
 
