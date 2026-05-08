@@ -35,6 +35,12 @@ class AppState:
         self._channels: list[TabloChannel] | None = None
         self.streams: dict[str, StreamSession] = {}  # session_id → session
         self._http = httpx.AsyncClient(timeout=30)
+        # Grid enrichment cache — avoids re-fetching 800 airing details on every guide load
+        self._grid_cache: tuple | None = None
+        self._grid_cache_time: float = 0.0
+        self._grid_cache_lock = asyncio.Lock()
+
+    _GRID_CACHE_TTL = 600  # seconds — 10 minutes
 
     # ------------------------------------------------------------------
     # Persistence
@@ -533,8 +539,19 @@ class AppState:
         """Fetch logos and airings for the grid guide.
 
         Returns (logo_map, path_to_ident, channel_to_airings, cloud_airing_map).
-        Fetches channel details, airings, and cloud data concurrently.
+        Results are cached for _GRID_CACHE_TTL seconds so repeated guide loads
+        don't re-fetch hundreds of airing detail records from the device.
+        The EPG endpoint passes max_airings=15000 and bypasses the cache.
         """
+        import time as _time
+
+        # Cache only applies to the standard guide load (max_airings == 1000)
+        use_cache = max_airings == 1000
+        if use_cache:
+            async with self._grid_cache_lock:
+                if self._grid_cache and _time.monotonic() - self._grid_cache_time < self._GRID_CACHE_TTL:
+                    return self._grid_cache
+
         path_results = await asyncio.gather(
             self.request_device("GET", "/guide/channels"),
             self.request_device("GET", "/guide/airings"),
@@ -607,7 +624,12 @@ class AppState:
                 "kind": ad.get("event_type"),
             })
 
-        return logo_map, path_to_ident, channel_to_airings, cloud_airing_map_local
+        result = logo_map, path_to_ident, channel_to_airings, cloud_airing_map_local
+        if use_cache:
+            async with self._grid_cache_lock:
+                self._grid_cache = result
+                self._grid_cache_time = _time.monotonic()
+        return result
 
     def _assemble_grid_row(self, c, logo_map: dict, path_to_ident: dict, channel_to_airings: dict, cloud_airing_map: dict) -> dict:
         c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
@@ -667,8 +689,13 @@ class AppState:
                 "airings": [],
             }) + "\n"
 
-        # Phase 2: enriched rows with logos and timelines
-        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment()
+        # Phase 2: enriched rows with logos and timelines (90s hard timeout)
+        try:
+            logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await asyncio.wait_for(
+                self._build_grid_enrichment(), timeout=90
+            )
+        except asyncio.TimeoutError:
+            return
         for c in channels:
             yield json.dumps(self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)) + "\n"
 
