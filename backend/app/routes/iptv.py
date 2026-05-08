@@ -107,7 +107,9 @@ async def m3u_playlist(request: Request):
         major, minor = ch.major, ch.minor
         ch_num = f"{major}.{minor}" if major > 0 else ""
         group = "Broadcast" if ch.kind == "ota" else "Streaming"
-        tvg_id = ch.identifier
+        identifier = ch.identifier
+        # tvg-id must match the XMLTV <channel id> so Jellyfin can correlate EPG data
+        tvg_id = ch_num if ch_num else (ch.call_sign or identifier)
 
         extinf = (
             f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}"'
@@ -120,7 +122,7 @@ async def m3u_playlist(request: Request):
             extinf += f" ({ch_num})"
 
         lines.append(extinf)
-        lines.append(f"{base}/api/iptv/live/{tvg_id}")
+        lines.append(f"{base}/api/iptv/live/{identifier}")
 
     return Response(
         "\n".join(lines),
