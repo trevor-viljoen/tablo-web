@@ -694,7 +694,8 @@ class AppState:
             logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await asyncio.wait_for(
                 self._build_grid_enrichment(), timeout=90
             )
-        except asyncio.TimeoutError:
+        except Exception as e:
+            print(f"[guide-grid] Phase 2 failed: {type(e).__name__}: {e}")
             return
         for c in channels:
             yield json.dumps(self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map)) + "\n"
