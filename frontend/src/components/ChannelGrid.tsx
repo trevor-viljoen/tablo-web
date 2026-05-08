@@ -10,19 +10,29 @@ function useGuideStream(enabled: boolean) {
   const [channels, setChannels] = useState<GuideChannel[]>([]);
   const [loading, setLoading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const channelsRef = useRef<GuideChannel[]>([]);
+
+  useEffect(() => { channelsRef.current = channels; }, [channels]);
 
   const startStream = useCallback(async () => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const map = new Map<string, GuideChannel>();
-    setLoading(true);
+    // Seed from existing data so cards stay visible during refresh
+    const map = new Map<string, GuideChannel>(channelsRef.current.map(c => [c.identifier, c]));
+    if (map.size === 0) setLoading(true);
 
     try {
       for await (const ch of api.guideStream(controller.signal)) {
         if (controller.signal.aborted) break;
-        map.set(ch.identifier, ch);
+        // Preserve existing logo/program when incoming row is a bare stub (Phase 1)
+        const existing = map.get(ch.identifier);
+        map.set(ch.identifier, {
+          ...ch,
+          logo_url: ch.logo_url ?? existing?.logo_url ?? null,
+          current_program: ch.current_program ?? existing?.current_program ?? null,
+        });
         setChannels([...map.values()]);
         setLoading(false);
       }
@@ -36,8 +46,9 @@ function useGuideStream(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
 
-    void startStream(); // eslint-disable-line react-hooks/set-state-in-effect
-    const interval = setInterval(() => void startStream(), 60_000);
+    void startStream();
+    // 5 min — aligns with backend 10-min cache; programs are at minimum 30 min
+    const interval = setInterval(() => void startStream(), 300_000);
 
     return () => {
       abortRef.current?.abort();

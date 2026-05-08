@@ -479,15 +479,18 @@ class AppState:
                 "current_program": current_program,
             }) + "\n"
 
-        # Phase 1: bare stubs so the UI renders immediately
-        for c in channels:
-            yield _stub(c)
-
-        # Phase 2: cloud logos fast path — only when enrichment cache is cold
+        # Phase 1: bare stubs so the UI renders immediately on cold start.
+        # Skip when cache is warm — Phase 3 will be instant and stubs would
+        # briefly clobber existing logo/program data already held by the frontend.
         import time as _time
         cache_warm = bool(
             self._grid_cache and _time.monotonic() - self._grid_cache_time < self._GRID_CACHE_TTL
         )
+        if not cache_warm:
+            for c in channels:
+                yield _stub(c)
+
+        # Phase 2: cloud logos fast path — only when enrichment cache is cold
         if not cache_warm:
             cloud_logo_map, _ = await self._fetch_cloud_channels()
             for c in channels:
