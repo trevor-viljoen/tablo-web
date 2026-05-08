@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import log_buffer as _log_buffer
-from .routes import auth, channels, stream
+from .routes import auth, channels, iptv, stream
 from .state import state, CONFIG_PATH
 
 _log_buffer.install()
@@ -34,6 +34,7 @@ app.add_middleware(
 # Explicitly include routers with the /api prefix
 app.include_router(auth.router)
 app.include_router(channels.router)
+app.include_router(iptv.router)
 app.include_router(stream.router, prefix="/api")
 
 @app.get("/api/health")

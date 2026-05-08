@@ -529,12 +529,11 @@ class AppState:
         recordings = await asyncio.gather(*[fetch_recording(p) for p in paths[:50]])
         return [r for r in recordings if r]
 
-    async def _build_grid_enrichment(self) -> tuple[dict, dict, dict, dict]:
+    async def _build_grid_enrichment(self, max_airings: int = 1000) -> tuple[dict, dict, dict, dict]:
         """Fetch logos and airings for the grid guide.
 
         Returns (logo_map, path_to_ident, channel_to_airings, cloud_airing_map).
         Fetches channel details, airings, and cloud data concurrently.
-        Airing count is capped at 1000 (the list is time-ordered from now).
         """
         path_results = await asyncio.gather(
             self.request_device("GET", "/guide/channels"),
@@ -569,7 +568,7 @@ class AppState:
 
         details, airing_details = await asyncio.gather(
             asyncio.gather(*[fetch_detail(p) for p in local_paths[:300]]),
-            asyncio.gather(*[fetch_airing(p) for p in airing_paths[:1000]]),
+            asyncio.gather(*[fetch_airing(p) for p in airing_paths[:max_airings]]),
         )
 
         path_to_ident: dict = {}
@@ -634,6 +633,14 @@ class AppState:
             raise RuntimeError("No active device")
         channels = await self.channels()
         logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment()
+        return [self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map) for c in channels]
+
+    async def get_epg_guide(self) -> list[dict]:
+        """Full multi-day guide fetch for XMLTV EPG — fetches up to 15000 airings."""
+        if self.active_device is None:
+            raise RuntimeError("No active device")
+        channels = await self.channels()
+        logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await self._build_grid_enrichment(max_airings=15000)
         return [self._assemble_grid_row(c, logo_map, path_to_ident, channel_to_airings, cloud_airing_map) for c in channels]
 
     async def stream_grid_guide_data(self):

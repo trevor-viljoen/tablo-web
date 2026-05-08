@@ -57,14 +57,15 @@ async def transcoded_stream(session_id: str, path: str, request: Request):
     hls_type = "application/vnd.apple.mpegurl"
 
     if path.endswith(".m3u8"):
-        return FileResponse(
-            file_path,
+        # Return 200 (not 206) — HLS players expect 200 for playlists
+        return Response(
+            content=file_path.read_bytes(),
             media_type=hls_type,
             headers={
                 "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "no-cache",
-                "Content-Disposition": "inline"
-            }
+                "Cache-Control": "no-cache, no-store",
+                "Content-Disposition": "inline",
+            },
         )
     elif path.endswith(".ts"):
         return FileResponse(
@@ -331,9 +332,9 @@ async def start_transcoder(session_id: str, input_url: str):
         "-c:a", "aac", "-b:a", "128k", "-ac", "2",
         "-f", "hls",
         "-hls_time", "6",
-        "-hls_list_size", "10",
+        "-hls_list_size", "0",
         "-hls_segment_filename", "%03d.ts",
-        "-hls_flags", "delete_segments+independent_segments",
+        "-hls_flags", "independent_segments",
         "-loglevel", "info",
         "playlist.m3u8"
     ]
