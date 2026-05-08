@@ -483,25 +483,47 @@ class AppState:
         for c in channels:
             yield _stub(c)
 
-        # Phase 2: cloud channel list (single request ~1-2s) → logos appear fast
-        cloud_logo_map, cloud_identifiers = await self._fetch_cloud_channels()
-        for c in channels:
-            if c.identifier in cloud_logo_map:
-                yield _stub(c, logo_url=cloud_logo_map[c.identifier])
+        # Phase 2: cloud logos fast path — only when enrichment cache is cold
+        import time as _time
+        cache_warm = bool(
+            self._grid_cache and _time.monotonic() - self._grid_cache_time < self._GRID_CACHE_TTL
+        )
+        if not cache_warm:
+            cloud_logo_map, _ = await self._fetch_cloud_channels()
+            for c in channels:
+                if c.identifier in cloud_logo_map:
+                    yield _stub(c, logo_url=cloud_logo_map[c.identifier])
 
-        # Phase 3: full enrichment — local OTA airing info + OTT per-channel airings
-        local_task = asyncio.create_task(self._fetch_guide_enrichment_local())
-        cloud_airing_task = asyncio.create_task(self._fetch_cloud_airings(cloud_identifiers))
-        local_logo_map, path_to_ident, channel_airing_map = await local_task
-        cloud_airing_map = await cloud_airing_task
+        # Phase 3: full enrichment via shared grid cache (instant on hit, ~90s on cold start)
+        try:
+            logo_map, path_to_ident, channel_to_airings, cloud_airing_map = await asyncio.wait_for(
+                self._build_grid_enrichment(), timeout=90
+            )
+        except Exception as e:
+            print(f"[guide-live] Phase 3 failed: {type(e).__name__}: {e}")
+            return
 
-        # Merge logos: local OTA logos take priority over cloud fallback
-        final_logo_map = {**cloud_logo_map, **local_logo_map}
+        now = datetime.now(timezone.utc)
+
+        def _current_airing(airings: list) -> dict | None:
+            for air in airings:
+                start_str = air.get("start")
+                if not start_str:
+                    continue
+                try:
+                    start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                    end = start + timedelta(seconds=air.get("duration") or 0)
+                    if start <= now < end:
+                        return air
+                except Exception:
+                    pass
+            return None
 
         for c in channels:
             c_path = next((p for p, ident in path_to_ident.items() if ident == c.identifier), None)
-            current_program = (channel_airing_map.get(c_path) if c_path else None) or cloud_airing_map.get(c.identifier)
-            yield _stub(c, logo_url=final_logo_map.get(c.identifier), current_program=current_program)
+            airings = channel_to_airings.get(c_path, []) if c_path else []
+            current_program = _current_airing(airings) or cloud_airing_map.get(c.identifier)
+            yield _stub(c, logo_url=logo_map.get(c.identifier), current_program=current_program)
 
     async def get_recordings(self) -> list[dict]:
         """Fetch all recordings from the device."""
