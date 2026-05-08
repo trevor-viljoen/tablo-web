@@ -1,5 +1,6 @@
 services:
   backend:
+    image: ghcr.io/trevor-viljoen/tablo-web-backend:latest
     build: ./backend
     restart: unless-stopped
     volumes:
@@ -12,6 +13,7 @@ services:
       - internal
 
   frontend:
+    image: ghcr.io/trevor-viljoen/tablo-web-frontend:latest
     build: ./frontend
     restart: unless-stopped
     ports:
