@@ -20,7 +20,8 @@ A modern, responsive web application for your Tablo (Gen 4) devices. Built with 
 - **Traditional Guide:** A full timeline/grid view of upcoming programs.
 - **Library Management:** Browse and watch your recordings directly in the browser.
 - **Auto-Discovery:** Automatically finds and connects to your Tablo devices on the local network.
-- **Containerized:** Easy deployment using Docker or Podman.
+- **Plex & Jellyfin Live TV:** HDHomeRun emulation — add tablo-web as a Live TV tuner in Plex or Jellyfin with full XMLTV EPG.
+- **Containerized:** Easy deployment using Docker or Podman, with pre-built images on GHCR.
 
 ---
 
@@ -34,6 +35,8 @@ A modern, responsive web application for your Tablo (Gen 4) devices. Built with 
 
 ## Quick Start
 
+### Option A — Pre-built images (recommended)
+
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/trevor-viljoen/tablo-web.git
@@ -43,10 +46,10 @@ A modern, responsive web application for your Tablo (Gen 4) devices. Built with 
 2. **Launch the stack:**
    ```bash
    # Using Docker
-   docker-compose up -d --build
+   docker-compose up -d
 
    # Using Podman
-   podman-compose up -d --build
+   podman-compose up -d
    ```
 
 3. **Access the app:**
@@ -54,6 +57,40 @@ A modern, responsive web application for your Tablo (Gen 4) devices. Built with 
 
 4. **Login:**
    Use your Tablo account email and password to authenticate.
+
+### Option B — Build from source
+
+```bash
+# Using Docker
+docker-compose up -d --build
+
+# Using Podman
+podman-compose up -d --build
+```
+
+> **Local Dockerfile tweaks:** create a `docker-compose.override.yml` to test changes before committing — it is gitignored and automatically merged by Compose.
+
+---
+
+## Plex & Jellyfin Live TV
+
+tablo-web exposes an HDHomeRun-compatible tuner interface so Plex and Jellyfin can use your Tablo as a Live TV source with a full multi-day EPG.
+
+### Plex
+
+1. Go to **Settings → Live TV & DVR → Set Up Plex DVR**.
+2. Plex will auto-discover the tuner at `http://<host>:7070`. If not, enter it manually.
+3. EPG data loads automatically — no Gracenote subscription needed.
+
+### Jellyfin
+
+1. Go to **Dashboard → Live TV → Add Tuner Device** → choose **M3U Tuner**.
+   - URL: `http://<host>:7070/api/iptv/playlist.m3u`
+2. Go to **Dashboard → Live TV → Add TV Guide Data Provider** → choose **XMLTV**.
+   - URL: `http://<host>:7070/api/iptv/epg.xml`
+3. Refresh guide data and browse **Live TV**.
+
+> See [GitHub Issues](https://github.com/trevor-viljoen/tablo-web/issues) for known limitations with OTT channels and EPG matching.
 
 ---
 

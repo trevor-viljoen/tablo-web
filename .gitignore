@@ -1,6 +1,10 @@
 # Automation and deployment scripts
 scripts/
 
+# Local Docker overrides (use docker-compose.override.yml for local Dockerfile tweaks)
+docker-compose.override.yml
+Dockerfile.local
+
 # Local data
 data/
 
