@@ -14,6 +14,18 @@ A modern, responsive web application for your Tablo (Gen 4) devices. Built with 
 
 ---
 
+## Screenshots
+
+| Live TV | TV Guide |
+|---|---|
+| ![Live TV](docs/screenshots/live-tv.png) | ![TV Guide](docs/screenshots/guide.png) |
+
+| Login | Profile |
+|---|---|
+| ![Login](docs/screenshots/login.png) | ![Profile menu](docs/screenshots/profile-menu.png) |
+
+---
+
 ## Features
 
 - **Live TV Streaming:** Smart transcoding (via FFmpeg) for high-compatibility browser playback.
