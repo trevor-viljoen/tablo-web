@@ -18,6 +18,32 @@ TRANSCODE_DIR.mkdir(exist_ok=True)
 
 transcode_procs: dict[str, subprocess.Popen] = {}
 
+MAX_TRANSCODE_SESSIONS = 4
+
+# Kill any FFmpeg processes left over from a previous run and wipe stale dirs.
+# After a container restart transcode_procs is empty but old FFmpeg processes
+# may still be alive (or their directories still on disk), which exhaust CPU
+# and cause new sessions to time out waiting for their first playlist segment.
+def _startup_cleanup():
+    try:
+        import signal
+        result = subprocess.run(["pgrep", "-f", "tablo_transcode"], capture_output=True, text=True)
+        for pid in result.stdout.split():
+            try:
+                import os; os.kill(int(pid), signal.SIGKILL)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    import shutil
+    for d in TRANSCODE_DIR.iterdir():
+        try:
+            shutil.rmtree(d)
+        except Exception:
+            pass
+
+_startup_cleanup()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRANSCODED
@@ -315,6 +341,21 @@ async def transcode_status(session_id: str):
 # ---------------------------------------------------------------------------
 
 async def start_transcoder(session_id: str, input_url: str):
+    # Evict oldest session if at the cap to prevent CPU exhaustion from zombies
+    if len(transcode_procs) >= MAX_TRANSCODE_SESSIONS:
+        oldest_id, oldest_proc = next(iter(transcode_procs.items()))
+        try:
+            oldest_proc.kill()
+            oldest_proc.wait(timeout=2)
+        except Exception:
+            pass
+        transcode_procs.pop(oldest_id, None)
+        import shutil
+        try:
+            shutil.rmtree(TRANSCODE_DIR / oldest_id)
+        except Exception:
+            pass
+
     session_dir = TRANSCODE_DIR / session_id
     session_dir.mkdir(exist_ok=True, parents=True)
 
