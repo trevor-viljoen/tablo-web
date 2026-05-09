@@ -320,21 +320,22 @@ async def start_transcoder(session_id: str, input_url: str):
 
     log_file = session_dir / "ffmpeg.log"
 
-    # Use a slightly more robust ffmpeg command
     cmd = [
         "ffmpeg",
-        "-y", # Overwrite
+        "-y",
         "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
         "-i", input_url,
+        # yadif: deinterlace 1080i OTA broadcast so browsers can render video
+        "-vf", "yadif",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-maxrate", "2000k", "-bufsize", "4000k",
         "-pix_fmt", "yuv420p", "-g", "60",
         "-c:a", "aac", "-b:a", "128k", "-ac", "2",
         "-f", "hls",
         "-hls_time", "6",
-        "-hls_list_size", "0",
+        "-hls_list_size", "6",
         "-hls_segment_filename", "%03d.ts",
-        "-hls_flags", "independent_segments",
+        "-hls_flags", "delete_segments+independent_segments",
         "-loglevel", "info",
         "playlist.m3u8"
     ]
