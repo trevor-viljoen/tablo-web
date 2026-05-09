@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import Hls from "hls.js";
 import { usePlayer } from "../hooks/usePlayer";
 import { api } from "../api/tablo";
 import type { Channel } from "../api/tablo";
@@ -25,12 +24,10 @@ export function VideoPlayer({ channel, onClose }: Props) {
   useEffect(() => {
     let cancelled = false;
 
-    // iOS WebKit cannot decode MPEG-2 video regardless of browser or MSE support.
-    // Transcode OTA (MPEG-2) to H.264 on any iOS device so both Safari (native HLS)
-    // and Chrome iOS (hls.js via MSE) receive a decodable stream.
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-                 (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-    const transcode = (isIOS || !Hls.isSupported()) && channel.kind === "ota" ? true : undefined;
+    // OTA broadcasts are encoded as MPEG-2 video. No browser's MSE implementation
+    // supports MPEG-2 video decoding — hls.js can demux the container but the
+    // video track is unrenderable, leaving only audio. Always transcode OTA to H.264.
+    const transcode = channel.kind === "ota" ? true : undefined;
     api.startStream(channel.identifier, transcode)
       .then(({ session_id, stream_url }) => {
         if (cancelled) return;
